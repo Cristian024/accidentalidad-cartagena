@@ -1336,19 +1336,12 @@ def main() -> None:
         f"Periodo: {df['fecha'].min():%Y-%m-%d} a {df['fecha'].max():%Y-%m-%d}"
     )
 
-    ##tab_descriptivo, tab_predictivo = st.tabs(
-    ##    ["Dashboard descriptivo", "Componente predictivo"]
-    ##)
-
     tab_descriptivo = st.tabs(
         ["Dashboard descriptivo"]
     )
 
     with tab_descriptivo:
         render_dashboard(df_filtrado)
-
-    # with tab_predictivo:
-    #     render_modelo(df)
 
 
 if __name__ == "__main__":
