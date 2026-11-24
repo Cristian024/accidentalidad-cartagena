@@ -12,7 +12,7 @@ La lógica está separada en:
     - config/config.py: constantes y rutas.
     - utils/text_utils.py: limpieza de texto y códigos.
     - utils/data_cleaning.py: carga, auditoría, nulos y exportación.
-    - app.py: página de Streamlit que consume la base limpia.
+    - ui/app.py: página de Streamlit que consume la base limpia.
 
 Requisitos:
     pip install -r requirements.txt

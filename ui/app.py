@@ -6,7 +6,7 @@ Ejecución local recomendada:
     python main.py dashboard
 
 También se puede ejecutar directamente con:
-    streamlit run app.py
+    streamlit run ui/app.py
 
 La aplicación consume data/accidentes_cartagena_limpio.csv, generado por
 main.py. Usa pandas, plotly.express y scikit-learn.
@@ -98,6 +98,25 @@ def entrenar_modelo(df: pd.DataFrame) -> dict:
     y_pred = modelo.predict(X_test_encoded)
     clases = [str(clase) for clase in modelo.classes_]
 
+    # Importancia agregada por variable original (suma de sus dummies).
+    importancias = pd.Series(
+        modelo.feature_importances_,
+        index=X_train_encoded.columns,
+    )
+    importancia_por_variable = {}
+    for variable in VARIABLES_PREDICTORAS:
+        columnas_variable = [
+            columna
+            for columna in X_train_encoded.columns
+            if columna.startswith(f"{variable}_")
+        ]
+        importancia_por_variable[variable] = float(
+            importancias[columnas_variable].sum()
+        )
+    importancias_variables = pd.Series(
+        importancia_por_variable
+    ).sort_values(ascending=False)
+
     return {
         "modelo": modelo,
         "columnas": list(X_train_encoded.columns),
@@ -107,6 +126,7 @@ def entrenar_modelo(df: pd.DataFrame) -> dict:
         "f1_weighted": f1_score(y_test, y_pred, average="weighted"),
         "n_train": len(X_train),
         "n_test": len(X_test),
+        "importancias": importancias_variables,
     }
 
 
@@ -146,10 +166,17 @@ def _mostrar(fig, caption: str = "") -> None:
         st.caption(caption)
 
 
+def _indice_opcion(opciones: list[str], valor: str) -> int:
+    """Devuelve el índice de un valor en una lista de opciones."""
+    return opciones.index(valor) if valor in opciones else 0
+
+
 def filtrar_datos(
     df: pd.DataFrame,
     gravedades: list[str],
     clases: list[str],
+    localidades: list[str],
+    barrios: list[str]
 ) -> pd.DataFrame:
     """Aplica los filtros de la barra lateral. Lista vacía = sin filtro."""
     filtrado = df.copy()
@@ -157,6 +184,14 @@ def filtrar_datos(
         filtrado = filtrado[filtrado[OBJETIVO].isin(gravedades)]
     if clases:
         filtrado = filtrado[filtrado["clase_accidente"].isin(clases)]
+    if localidades:
+        filtrado = filtrado[
+            filtrado["localidad"].astype(str).isin(localidades)
+        ]
+    if barrios:
+        filtrado = filtrado[
+            filtrado["BARRIO"].astype(str).isin(barrios)
+        ]
     return filtrado
 
 
@@ -667,6 +702,7 @@ def _grafico_mapa(df: pd.DataFrame) -> None:
         return
 
     mapa["fecha_texto"] = mapa["fecha"].dt.strftime("%Y-%m-%d")
+    mapa["localidad_texto"] = "Localidad " + mapa["localidad"].astype(str)
     fig = px.scatter_map(
         mapa,
         lat="latitud",
@@ -675,6 +711,7 @@ def _grafico_mapa(df: pd.DataFrame) -> None:
         color_discrete_map=COLORES_GRAVEDAD,
         hover_data={
             "BARRIO": True,
+            "localidad_texto": True,
             "clase_accidente": True,
             "fecha_texto": True,
             "hora": True,
@@ -963,20 +1000,46 @@ def render_dashboard(df: pd.DataFrame) -> None:
 # ---------------------------------------------------------------------------
 def render_modelo(df: pd.DataFrame) -> None:
     st.subheader("Componente predictivo")
-    st.write(
-        "Modelo de clasificación que estima la probabilidad de que un "
-        "siniestro termine con heridos o con muertos a partir de la clase de "
-        "accidente, el objeto de choque, el objeto fijo y el código de "
-        "hipotesis_1."
+    st.markdown(
+        "Este componente usa un modelo supervisado para estimar si un "
+        "siniestro terminará con **heridos** o con **muertos** a partir de "
+        "cuatro características registradas en el parte inicial."
     )
-    st.caption(
-        "Modelo: RandomForestClassifier(n_estimators=50, max_depth=5), "
-        "entrenado con el 80% de la base completa (no con los filtros de la "
-        "barra lateral)."
+
+    total = len(df)
+    pct_heridos = _porcentaje(int(df[OBJETIVO].eq("Con Heridos").sum()), total)
+    pct_muertos = _porcentaje(int(df[OBJETIVO].eq("Con Muertos").sum()), total)
+
+    st.markdown("#### 1. ¿Qué intenta predecir?")
+    columna1, columna2 = st.columns([1.1, 1])
+    with columna1:
+        st.markdown(
+            "- **Variable objetivo (y):** `gravedad`.\n"
+            "- **Variables predictoras (X):** `clase_accidente`, "
+            "`choque_con`, `objeto_fijo` e `hipotesis_1`.\n"
+            "- **Modelo:** `RandomForestClassifier(n_estimators=50, "
+            "max_depth=5)`.\n"
+            "- **Partición:** 80% entrenamiento y 20% prueba, con "
+            "`random_state=42`."
+        )
+    with columna2:
+        st.info(
+            f"La base completa está desbalanceada: **Con Heridos "
+            f"{pct_heridos:.1f}%** y **Con Muertos {pct_muertos:.1f}%**. "
+            "Por eso la exactitud puede ser alta aunque el modelo falle en la "
+            "clase minoritaria; el F1-Score ponderado ayuda a matizar esa "
+            "lectura."
+        )
+
+    st.markdown(
+        "Las variables categóricas se transforman con **one-hot encoding** "
+        "(`pd.get_dummies`). El modelo se entrena con la base completa, no con "
+        "los filtros de la barra lateral, para mantener estable la evaluación."
     )
 
     artefactos = entrenar_modelo(df)
 
+    st.markdown("#### 2. Desempeño del modelo")
     metrica1, metrica2, metrica3 = st.columns(3)
     metrica1.metric("Exactitud (Accuracy)", f"{artefactos['accuracy']:.2%}")
     metrica2.metric("F1-Score ponderado", f"{artefactos['f1_weighted']:.3f}")
@@ -985,7 +1048,23 @@ def render_modelo(df: pd.DataFrame) -> None:
         f"{artefactos['n_train']:,} / {artefactos['n_test']:,}",
     )
 
-    st.markdown("### Matriz de confusión")
+    st.markdown(
+        "- **Exactitud (Accuracy):** porcentaje de casos del conjunto de "
+        "prueba clasificados correctamente. Es intuitiva, pero puede ser "
+        "optimista cuando una clase domina.\n"
+        "- **F1-Score ponderado:** combina precisión y recall y pondera por "
+        "el tamaño de cada clase. Es más informativo con clases "
+        "desbalanceadas."
+    )
+
+    st.markdown("##### Matriz de confusión")
+    st.markdown(
+        "Las **filas** representan la gravedad real y las **columnas** la "
+        "gravedad predicha. La **diagonal** son los aciertos; los valores "
+        "fuera de la diagonal son errores. Por ejemplo, un siniestro real "
+        "'Con Muertos' predicho como 'Con Heridos' aparece en la fila "
+        "'Con Muertos' y en la columna 'Con Heridos'."
+    )
     fig_matriz = px.imshow(
         artefactos["matriz_confusion"],
         text_auto=True,
@@ -1003,10 +1082,55 @@ def render_modelo(df: pd.DataFrame) -> None:
     fig_matriz.update_layout(margin=dict(t=60, b=20, l=20, r=20))
     st.plotly_chart(fig_matriz, width="stretch")
 
-    st.markdown("### Simulador de probabilidad")
+    st.markdown("#### 3. ¿En qué se fija el modelo?")
+    importancias = (
+        artefactos["importancias"]
+        .rename_axis("Variable")
+        .reset_index(name="Importancia")
+    )
+    fig_importancia = px.bar(
+        importancias,
+        x="Importancia",
+        y="Variable",
+        orientation="h",
+        text=importancias["Importancia"].map(lambda valor: f"{valor:.1%}"),
+        labels={
+            "Importancia": "Importancia relativa",
+            "Variable": "Variable predictora",
+        },
+        title="Importancia relativa de cada variable",
+        color_discrete_sequence=["#2E86AB"],
+    )
+    fig_importancia.update_traces(textposition="outside")
+    fig_importancia.update_xaxes(tickformat=".0%", title="Importancia relativa")
+    fig_importancia.update_layout(
+        height=350,
+        margin=dict(t=60, b=20, l=20, r=40),
+        yaxis_title="",
+    )
+    st.plotly_chart(fig_importancia, width="stretch")
+    st.caption(
+        "La importancia indica cuánto contribuye cada variable a las "
+        "decisiones del bosque; no implica causalidad ni una relación "
+        "comprobada."
+    )
+
+    st.markdown("#### 4. Simulador de escenarios")
+    st.markdown(
+        "Selecciona las características de un siniestro hipotético y pulsa "
+        "**Estimar probabilidad**. El modelo devolverá la probabilidad "
+        "estimada de cada nivel de gravedad. La etiqueta con mayor "
+        "probabilidad es la predicción del modelo, pero no una certeza."
+    )
     opciones = {
         columna: sorted(df[columna].dropna().astype(str).unique())
         for columna in VARIABLES_PREDICTORAS
+    }
+    valores_iniciales = {
+        "clase_accidente": "Choque",
+        "choque_con": "Vehiculo",
+        "objeto_fijo": "No aplica",
+        "hipotesis_1": "139",
     }
 
     with st.form("formulario_prediccion"):
@@ -1015,19 +1139,35 @@ def render_modelo(df: pd.DataFrame) -> None:
             clase_accidente = st.selectbox(
                 "Clase de accidente",
                 opciones["clase_accidente"],
+                index=_indice_opcion(
+                    opciones["clase_accidente"],
+                    valores_iniciales["clase_accidente"],
+                ),
             )
             objeto_fijo = st.selectbox(
                 "Objeto fijo",
                 opciones["objeto_fijo"],
+                index=_indice_opcion(
+                    opciones["objeto_fijo"],
+                    valores_iniciales["objeto_fijo"],
+                ),
             )
         with columna2:
             choque_con = st.selectbox(
                 "Choque con",
                 opciones["choque_con"],
+                index=_indice_opcion(
+                    opciones["choque_con"],
+                    valores_iniciales["choque_con"],
+                ),
             )
             hipotesis_1 = st.selectbox(
                 "Código de hipotesis_1",
                 opciones["hipotesis_1"],
+                index=_indice_opcion(
+                    opciones["hipotesis_1"],
+                    valores_iniciales["hipotesis_1"],
+                ),
             )
 
         enviado = st.form_submit_button("Estimar probabilidad")
@@ -1064,11 +1204,22 @@ def render_modelo(df: pd.DataFrame) -> None:
             resultado["Probabilidad"] * 100
         ).round(2)
 
+        st.caption(
+            f"Escenario simulado: clase={clase_accidente}; "
+            f"choque_con={choque_con}; objeto_fijo={objeto_fijo}; "
+            f"hipotesis_1={hipotesis_1}."
+        )
         st.markdown("**Probabilidad estimada por nivel de gravedad:**")
         st.dataframe(
             resultado[["Gravedad", "Probabilidad (%)"]],
             hide_index=True,
             width="stretch",
+        )
+
+        prediccion = resultado.iloc[0]
+        st.success(
+            f"Mayor probabilidad: **{prediccion['Gravedad']}** "
+            f"({prediccion['Probabilidad']:.1%})."
         )
 
         fig_probabilidad = px.bar(
@@ -1096,6 +1247,7 @@ def render_modelo(df: pd.DataFrame) -> None:
             "estadística del modelo para las características elegidas."
         )
 
+    st.markdown("#### 5. Limitaciones")
     st.warning(
         "Limitaciones del modelo: la base está desbalanceada (hay muchos más "
         "siniestros con heridos que con muertos) y no incluye variables "
@@ -1154,14 +1306,30 @@ def main() -> None:
         options=clases,
         default=clases,
     )
+    localidades = sorted(df["localidad"].dropna().astype(str).unique())
+    localidades_seleccionadas = st.sidebar.multiselect(
+        "Localidad",
+        options=localidades,
+        default=localidades,
+        format_func=lambda valor: f"Localidad {valor}",
+    )
+    barrios = sorted(df["BARRIO"].dropna().unique())
+    barrios_seleccionados = st.sidebar.multiselect(
+        "Barrio",
+        options=barrios,
+        default=barrios,
+    )
     st.sidebar.caption(
-        "Si no seleccionas opciones, se muestran todos los registros."
+        "Si no seleccionas opciones, se muestran todos los registros. "
+        "El filtro de localidad también actualiza el mapa."
     )
 
     df_filtrado = filtrar_datos(
         df,
         gravedades_seleccionadas,
         clases_seleccionadas,
+        localidades_seleccionadas,
+        barrios_seleccionados
     )
     st.sidebar.metric("Siniestros filtrados", f"{len(df_filtrado):,}")
     st.sidebar.caption(
